@@ -6,6 +6,8 @@ except ImportError:
     sys.path.append("..")
     import bfsinkhorn
 
+import bfsinkhorn.boson
+
 import jax.numpy as jnp
 
 
