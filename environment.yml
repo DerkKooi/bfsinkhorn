@@ -1,0 +1,12 @@
+name: bfsinkhorn
+channels:
+  - conda-forge
+dependencies:
+  - python
+  - numpy
+  - scipy
+  - jupyter
+  - matplotlib
+  - pip
+  - pip:
+    - pyscf
