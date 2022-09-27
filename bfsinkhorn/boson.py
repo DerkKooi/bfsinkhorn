@@ -176,6 +176,21 @@ compute_correlations_degen_vmap = jit(
 )
 
 
+@jit
+def compute_occupations(eps, N, beta=1.0):
+
+    # Compute free energy
+    F = compute_free_energy(eps, N, beta).block_until_ready()
+
+    # Compute auxiliary free energy
+    Fp = compute_aux_free_energy_vmap(eps, F, beta).block_until_ready()
+
+    # Compute occupations
+    n = jnp.exp(-beta * (eps + Fp[:, 0] - F[N]))
+
+    return n
+
+
 def sinkhorn(
     n,
     N,
