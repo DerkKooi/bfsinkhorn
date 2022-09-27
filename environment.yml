@@ -4,8 +4,9 @@ channels:
   - conda-forge
 dependencies:
   - python=3.9
+  - gcc=12.1.0
   - numpy
-  - scipy=1.7
+  - scipy
   - jupyter
   - matplotlib
   - jax
