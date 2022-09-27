@@ -12,6 +12,11 @@ A python package to calculate (non-interacting) orbital energies for 1-body Redu
 - cd bfsinkhorn
 - pip install .
 
+or
+
+- pip install git+https://github.com/DerkKooi/bfsinkhorn
+
+
 ## Usage
 See the figures folder of the repository for examples of how to use the Bosonic and Fermionic Sinkhorn algorithms.
 
