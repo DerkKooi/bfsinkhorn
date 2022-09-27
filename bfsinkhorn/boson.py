@@ -176,14 +176,14 @@ compute_correlations_degen_vmap = jit(
 )
 
 
-@jit
+@partial(jit, static_argnums=(1))
 def compute_occupations(eps, N, beta=1.0):
 
     # Compute free energy
-    F = compute_free_energy(eps, N, beta).block_until_ready()
+    F = compute_free_energy(eps, N, beta)
 
     # Compute auxiliary free energy
-    Fp = compute_aux_free_energy_vmap(eps, F, beta).block_until_ready()
+    Fp = compute_aux_free_energy_vmap(eps, F, beta)
 
     # Compute occupations
     n = jnp.exp(-beta * (eps + Fp[:, 0] - F[N]))
