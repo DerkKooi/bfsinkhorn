@@ -168,6 +168,37 @@ compute_correlations_degen_vmap = jit(
 )
 
 
+@partial(jit, static_argnums=(1))
+def compute_occupations(eps, N, beta=1.0):
+    """Compute the occupation numbers for a given set of orbital energies
+
+    Parameters
+    ----------
+    eps : 1-dimensional ndarray
+      The orbital energies
+    N : int
+      The number of electrons
+    beta : float
+      Inverse temperature
+
+    Returns
+    --------
+    n : 1-dimensional ndarray
+      The occupation numbers
+    """
+
+    # Compute partition function ratios
+    Q = compute_partition_function(eps, N, beta)
+
+    # Compute auxiliary partition function missing one orbital
+    Qp = compute_aux_partition_function_vmap(eps, Q, beta)
+
+    # Compute the occupations
+    n = jnp.exp(-beta * eps) * Qp[0]
+
+    return n
+
+
 def sinkhorn(
     n,
     N,

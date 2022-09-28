@@ -176,6 +176,37 @@ compute_correlations_degen_vmap = jit(
 )
 
 
+@partial(jit, static_argnums=(1))
+def compute_occupations(eps, N, beta=1.0):
+    """Compute the occupation numbers for a given set of orbital energies
+
+    Parameters
+    ----------
+    eps : 1-dimensional ndarray
+      The orbital energies
+    N : int
+      The number of particles
+    beta : float
+      Inverse temperature
+
+    Returns
+    --------
+    n : 1-dimensional ndarray
+      The occupation numbers
+    """
+
+    # Compute free energy
+    F = compute_free_energy(eps, N, beta)
+
+    # Compute auxiliary free energy
+    Fp = compute_aux_free_energy_vmap(eps, F, beta)
+
+    # Compute occupations
+    n = jnp.exp(-beta * (eps + Fp[:, 0] - F[N]))
+
+    return n
+
+
 def sinkhorn(
     n,
     N,

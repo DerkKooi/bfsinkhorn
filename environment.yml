@@ -1,12 +1,15 @@
 name: bfsinkhorn
 channels:
+  - defaults
   - conda-forge
 dependencies:
-  - python
+  - gcc=12.1.0
   - numpy
   - scipy
   - jupyter
   - matplotlib
+  - jax
+  - jaxlib>=0.3.7
   - pip
   - pip:
     - pyscf
