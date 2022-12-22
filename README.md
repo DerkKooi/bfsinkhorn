@@ -1,5 +1,8 @@
 ## Bosonic and Fermionic Sinkhorn
-A python package to calculate (non-interacting) orbital energies for 1-body Reduced Density Matrix Functional Theory in the canonical ensemble [1]
+A python package to calculate (non-interacting) orbital energies for 1-body Reduced Density Matrix Functional Theory in the canonical ensemble. [1]
+
+![The bfsinkhorn "logo"](logo/bfsinkhorn.png)
+
 
 ## Requirements:
 - Python 3.7 or newer
