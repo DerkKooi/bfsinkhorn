@@ -7,7 +7,7 @@ from .utils import summinexp_vmap
 
 @partial(jit, static_argnums=(1))
 def compute_partition_function(eps, N, beta):
-    """Compute the fermionic partition function ratios
+    r"""Compute the fermionic partition function ratios
 
     Parameters
     ----------
@@ -49,7 +49,7 @@ def compute_partition_function(eps, N, beta):
 
 @jit
 def compute_aux_partition_function(eps, Q, beta):
-    """Compute the auxiliary fermionic partition function ratios
+    r"""Compute the auxiliary fermionic partition function ratios
 
     This computes $Q_M^p = Z_M^p/Z_N$ for M=N-1 and M=N
     Note that this corresponds to REMOVING an orbital
@@ -93,7 +93,7 @@ compute_aux_partition_function_vmap = jit(
 
 @jit
 def compute_correlations(n, eps, beta):
-    """Compute the fermionic correlations <\hat{n}_p \hat{n}_q>
+    r"""Compute the fermionic correlations <\hat{n}_p \hat{n}_q>
 
     We use the expression for non-degenerate levels,
     so we have to correct afterwards for degenerate levels
@@ -125,7 +125,7 @@ def compute_correlations(n, eps, beta):
 
 @jit
 def compute_correlations_degen(eps, Q, beta):
-    """Compute the fermionic correlations <\hat{n}_p \hat{n}_q> for degenerate levels
+    r"""Compute the fermionic correlations <\hat{n}_p \hat{n}_q> for degenerate levels
 
     Parameters
     ----------
@@ -170,7 +170,7 @@ compute_correlations_degen_vmap = jit(
 
 @partial(jit, static_argnums=(1))
 def compute_occupations(eps, N, beta=1.0):
-    """Compute the occupation numbers for a given set of orbital energies
+    r"""Compute the occupation numbers for a given set of orbital energies
 
     Parameters
     ----------
@@ -211,7 +211,7 @@ def sinkhorn(
     degen_cutoff=10**-7,
     verbose=True,
 ):
-    """(Fermionic) Sinkhorn algorithm
+    r"""(Fermionic) Sinkhorn algorithm
 
     Parameters
     ----------

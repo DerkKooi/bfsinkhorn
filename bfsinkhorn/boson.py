@@ -7,7 +7,7 @@ from .utils import minlogsumminexp, minlogsumminexp_vmap
 
 @partial(jit, static_argnums=(1))
 def compute_free_energy(eps, N, beta):
-    """Compute bosonic free energies
+    r"""Compute bosonic free energies
 
     Parameters
     ----------
@@ -50,7 +50,7 @@ def compute_free_energy(eps, N, beta):
 
 @jit
 def compute_aux_free_energy(eps, F, beta):
-    """Compute bosonic auxiliary free energy,
+    r"""Compute bosonic auxiliary free energy,
 
     Note that this corresponds to ADDING an extra orbital
     with the same orbital energy
@@ -95,7 +95,7 @@ compute_aux_free_energy_vmap = jit(
 
 @jit
 def compute_correlations(n, eps, F, beta):
-    """Compute the bosonic correlations <\hat{n}_p \hat{n}_q>
+    r"""Compute the bosonic correlations <\hat{n}_p \hat{n}_q>
 
     We use the expression for non-degenerate levels,
     so we have to correct afterwards for degenerate levels
@@ -141,7 +141,7 @@ def compute_correlations(n, eps, F, beta):
 
 @jit
 def compute_correlations_degen(eps, F, beta):
-    """Compute the bosonic correlations <\hat{n}_p \hat{n}_q> for degenerate levels
+    r"""Compute the bosonic correlations <\hat{n}_p \hat{n}_q> for degenerate levels
 
     Parameters
     ----------
@@ -178,7 +178,7 @@ compute_correlations_degen_vmap = jit(
 
 @partial(jit, static_argnums=(1))
 def compute_occupations(eps, N, beta=1.0):
-    """Compute the occupation numbers for a given set of orbital energies
+    r"""Compute the occupation numbers for a given set of orbital energies
 
     Parameters
     ----------
@@ -219,7 +219,7 @@ def sinkhorn(
     degen_cutoff=10**-7,
     verbose=True,
 ):
-    """(Bosonic) Sinkhorn algorithm
+    r"""(Bosonic) Sinkhorn algorithm
 
     Parameters
     ----------
