@@ -2,7 +2,7 @@ from jax import jit, vmap, lax
 import jax.numpy as jnp
 from functools import partial
 from jax.scipy.special import xlogy
-from .utils import minlogsumminexp, minlogsumminexp_vmap
+from .utils import minlogsumminexp, minlogsumminexp_array, minlogsumminexp_vmap
 
 
 @partial(jit, static_argnums=(1))
@@ -61,7 +61,7 @@ def compute_aux_free_energy(eps, F, beta):
     eps : float
       The orbital energy of the orbital at hand
     F : 1-dimensional ndarray of length N+1
-      The partition function ratios for M=1 to M=N
+      The free energies for M=0 to M=N
     beta : float
       Inverse temperature
 
@@ -91,6 +91,42 @@ def compute_aux_free_energy(eps, F, beta):
 compute_aux_free_energy_vmap = jit(
     vmap(compute_aux_free_energy, in_axes=(0, None, None), out_axes=0)
 )
+
+
+@jit
+def compute_aux_free_energy_all(eps, F, beta):
+    r"""Compute all bosonic auxiliary free energies,
+
+    Note that this corresponds to ADDING an extra orbital
+    with the same orbital energy
+    This computes $F_M^p$ for M=0 to M=N
+
+    Parameters
+    ----------
+    eps : float
+      The orbital energy of the orbital at hand
+    F : 1-dimensional ndarray of length N+1
+      The free energies for M=0 to M=N
+    beta : float
+      Inverse temperature
+
+    Returns
+    --------
+    Fp : 1-dimensional ndarray of length N+1
+      The auxiliary free energies for M=0 to M=N
+    """
+
+    N = F.shape[0] - 1
+
+    # Initialize exponents with infs for the off-diagonal terms
+    exponents = jnp.ones((N + 1, N + 1)) * jnp.inf
+
+    # Compute auxiliary free energy of M=N-1 system
+    M, k = jnp.tril_indices_from(exponents)
+    exponents = exponents.at[M, k].set(F[M - k] + k * eps)
+    Fp = minlogsumminexp_array(beta * exponents) / beta
+
+    return Fp
 
 
 @jit

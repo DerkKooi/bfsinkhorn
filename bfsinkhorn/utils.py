@@ -52,15 +52,15 @@ def minlogsumminexp_array(exponents):
     Parameters
     ----------
     exponents : 2-dimensional ndarray
-        The exponents to sum (on axis zero)
+        The exponents to sum (on axis one)
 
     Returns
     -------
     minlogsumminexp : 1-dimensional ndarray
         The result of log(sum(exp(exponents)))
     """
-    min = jnp.min(exponents, axis=0)
-    return -jnp.log(jnp.sum(jnp.exp(-exponents + min), axis=0)) + min
+    min = jnp.min(exponents, axis=1)
+    return -jnp.log(jnp.sum(jnp.exp(-exponents + min), axis=1)) + min
 
 
 # Parallelize minlogsumminexp with vmap,

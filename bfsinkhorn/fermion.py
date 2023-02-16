@@ -199,16 +199,39 @@ def compute_occupations(eps, N, beta=1.0):
     return n
 
 
+def compute_correlations_full(n, eps, Q, beta=1.0, degen_cutoff=1e-7):
+    r"""
+    Compute the correlations <\hat{n}_p \hat{n}_q> as well
+    """
+    norb = n.shape[0]
+    correlations = compute_correlations(n, eps, beta)
+
+    # Compute the degenerate level correlations if they are present
+    degens = jnp.where(
+        jnp.abs(
+            jnp.ones((norb, norb)) * jnp.exp(beta * eps)
+            - (jnp.ones((norb, norb)) * jnp.exp(beta * eps)).T
+            + jnp.eye(norb)
+        )
+        < degen_cutoff
+    )
+    if degens[0].size > 0:
+        correlations = correlations.at[degens[0], degens[1]].set(
+            compute_correlations_degen_vmap(
+                jnp.vstack((eps[degens[0]], eps[degens[1]])), Q, beta
+            )
+        )
+    return correlations
+
+
 def sinkhorn(
     n,
     N,
     beta=1.0,
     eps=None,
-    max_iters=100,
+    max_iters: int = 100,
     threshold=10**-10,
     old=False,
-    comp_correlations=False,
-    degen_cutoff=10**-7,
     verbose=True,
 ):
     r"""(Fermionic) Sinkhorn algorithm
@@ -230,7 +253,7 @@ def sinkhorn(
     old : bool, optional
       Whether to use the ``naive`` Sinkhorn, default is using Fermionic Sinkhorn
     comp_correlations : bool, optional
-      Whether to compute the correlations <\hat{n}_p \hat{n}_q> as well, default is not
+      Whether to
     degen_cutoff : float, optional
       The cutoff for degenerate levels, default is 10**-7
     verbose : bool, optional
@@ -319,25 +342,6 @@ def sinkhorn(
     # Compute entropy, note that this assumes that the orbital energies are shifted
     S = -beta * F
 
-    if comp_correlations:
-        correlations = compute_correlations(n, eps, beta).block_until_ready()
-
-        # Compute the degenerate level correlations if they are present
-        degens = jnp.where(
-            jnp.abs(
-                jnp.ones((norb, norb)) * jnp.exp(beta * eps)
-                - (jnp.ones((norb, norb)) * jnp.exp(beta * eps)).T
-                + jnp.eye(norb)
-            )
-            < degen_cutoff
-        )
-        if degens[0].size > 0:
-            correlations = correlations.at[degens[0], degens[1]].set(
-                compute_correlations_degen_vmap(
-                    jnp.vstack((eps[degens[0]], eps[degens[1]])), Q, beta
-                ).block_until_ready()
-            )
-
     # Pack the results into a dictionary
     result["eps"] = eps
     result["errors"] = errors
@@ -346,6 +350,4 @@ def sinkhorn(
     result["eps_GC"] = eps_GC
     result["S_GC"] = S_GC
     result["n_approx"] = n_approx
-    if comp_correlations:
-        result["correlations"] = correlations
     return result
