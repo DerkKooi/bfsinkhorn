@@ -1,12 +1,17 @@
-from jax import jit, vmap, lax
-import jax.numpy as jnp
 from functools import partial
+
+from jax import jit, vmap, lax, jacfwd, jacrev
+import jax.numpy as jnp
 from jax.scipy.special import xlogy
+from jaxopt import FixedPointIteration, AndersonAcceleration
+from jaxopt._src.base import OptStep
+
+
 from .utils import minlogsumminexp, minlogsumminexp_array, minlogsumminexp_vmap
 
 
 @partial(jit, static_argnums=(1))
-def compute_free_energy(eps, N, beta):
+def compute_free_energy(eps: jnp.ndarray, N: int, beta: float) -> jnp.ndarray:
     r"""Compute bosonic free energies
 
     Parameters
@@ -49,7 +54,9 @@ def compute_free_energy(eps, N, beta):
 
 
 @jit
-def compute_aux_free_energy(eps, F, beta):
+def compute_aux_free_energy(
+    eps: jnp.ndarray, F: jnp.ndarray, beta: jnp.ndarray
+) -> jnp.ndarray:
     r"""Compute bosonic auxiliary free energy,
 
     Note that this corresponds to ADDING an extra orbital
@@ -94,7 +101,7 @@ compute_aux_free_energy_vmap = jit(
 
 
 @jit
-def compute_aux_free_energy_all(eps, F, beta):
+def compute_aux_free_energy_all(eps: float, F: jnp.ndarray, beta: float):
     r"""Compute all bosonic auxiliary free energies,
 
     Note that this corresponds to ADDING an extra orbital
@@ -130,7 +137,7 @@ def compute_aux_free_energy_all(eps, F, beta):
 
 
 @jit
-def compute_correlations(n, eps, F, beta):
+def compute_correlations(n: jnp.ndarray, eps: jnp.ndarray, F: jnp.ndarray, beta: float):
     r"""Compute the bosonic correlations <\hat{n}_p \hat{n}_q>
 
     We use the expression for non-degenerate levels,
@@ -176,7 +183,7 @@ def compute_correlations(n, eps, F, beta):
 
 
 @jit
-def compute_correlations_degen(eps, F, beta):
+def compute_correlations_degen(eps: float, F: jnp.ndarray, beta: float):
     r"""Compute the bosonic correlations <\hat{n}_p \hat{n}_q> for degenerate levels
 
     Parameters
@@ -212,8 +219,55 @@ compute_correlations_degen_vmap = jit(
 )
 
 
+def compute_correlations_full(
+    n: jnp.ndarray, eps: jnp.ndarray, F: jnp.ndarray, beta=1.0, degen_cutoff=1e-7
+):
+    r"""Compute the bosonic correlations <\hat{n}_p \hat{n}_q>
+
+    We use the expression for non-degenerate levels,
+    so we have to correct afterwards for degenerate levels
+
+    Parameters
+    ----------
+    n : 1-dimensional ndarray
+      The occupation numbers
+    eps : 1-dimensional ndarray
+      The orbital energies
+    F : 1-dimensional ndarray of length N+1
+      The free energy F_M for M=0 to M=N
+    beta : float
+      Inverse temperature
+    degen_cutoff : float
+      Cutoff for degeneracy
+
+    Returns
+    --------
+    correlations: ndarray with dimension (size(n), size(n))
+      The bosonic correlations <\hat{n}_p \hat{n}_q>
+    """
+    norb = eps.shape[0]
+    correlations = compute_correlations(n, eps, F, beta)
+
+    # Compute the degenerate level correlations if they are present
+    degens = jnp.where(
+        jnp.abs(
+            jnp.ones((norb, norb)) * jnp.exp(beta * eps)
+            - (jnp.ones((norb, norb)) * jnp.exp(beta * eps)).T
+            + jnp.eye(norb)
+        )
+        < degen_cutoff
+    )
+    if degens[0].size > 0:
+        correlations = correlations.at[degens[0], degens[1]].set(
+            compute_correlations_degen_vmap(
+                jnp.vstack((eps[degens[0]], eps[degens[1]])), F, beta
+            ).block_until_ready()
+        )
+    return correlations
+
+
 @partial(jit, static_argnums=(1))
-def compute_occupations(eps, N, beta=1.0):
+def compute_occupations(eps: jnp.ndarray, N: int, beta=1.0):
     r"""Compute the occupation numbers for a given set of orbital energies
 
     Parameters
@@ -241,6 +295,201 @@ def compute_occupations(eps, N, beta=1.0):
     n = jnp.exp(-beta * (eps + Fp[:, 0] - F[N]))
 
     return n
+
+
+@partial(jit, static_argnums=(2, 4, 5))
+def fixed_point(
+    eps: jnp.ndarray,
+    n: jnp.ndarray,
+    N: int = 2,
+    beta: float = 1.0,
+    old: bool = False,
+    with_aux: bool = True,
+) -> jnp.ndarray:
+    r"""Compute the fixed point of the (Bosonic) Sinkhorn algorithm
+
+    Parameters
+    ----------
+    eps : 1-dimensional ndarray
+      The orbital energies
+    n : 1-dimensional ndarray
+      The occupation numbers
+    N : int
+      The number of particles
+    beta : float
+      Inverse temperature
+    old : bool
+      Whether to use the old version of the Sinkhorn algorithm
+    with_aux : bool
+      Whether to return the auxiliary occupation numbers
+
+    Returns
+    --------
+    eps : 1-dimensional ndarray
+      The updated orbital energies
+    n : 1-dimensional ndarray
+      The auxiliary occupation numbers (if with_aux=True)
+    """
+
+    # Compute free energy
+    F = compute_free_energy(eps, N, beta)
+
+    # Compute auxiliary free energy
+    Fp = compute_aux_free_energy_vmap(eps, F, beta)
+
+    # Compute new orbital energies
+    if old:
+        eps_new = -jnp.log(n) / beta + F[-1] - Fp[:, 0]
+    else:
+        eps_new = -jnp.log(n / (1 + n)) / beta + Fp[:, 1] - Fp[:, 0]
+
+    eps_new = eps_new - jnp.sum(n * eps_new) / N
+
+    if with_aux:
+        # Compute occupation numbers
+        n_approx = jnp.exp(-beta * (eps + Fp[:, 0] - F[N]))
+        return eps_new, n_approx
+    else:
+        return eps_new
+
+
+@jit
+def eps_GC_guess(n: jnp.ndarray, beta: float) -> jnp.ndarray:
+    """Compute the grand canonical guess for the orbital energies
+
+    Parameters
+    ----------
+    n : 1-dimensional ndarray
+      The occupation numbers
+
+    Returns
+    --------
+    eps : 1-dimensional ndarray
+      The orbital energies"""
+    return -jnp.log(n / (1 + n)) / beta
+
+
+@partial(jit, static_argnums=(2))
+def normalize_eps(n: jnp.ndarray, eps: jnp.ndarray, N: int) -> jnp.ndarray:
+    """Normalize the orbital energies
+
+    Parameters
+    ----------
+    n : 1-dimensional ndarray
+      The occupation numbers
+    eps : 1-dimensional ndarray
+      The orbital energies
+    N : int
+
+    Returns
+    --------
+    new_eps : 1-dimensional ndarray
+      The normalized orbital energies"""
+
+    return eps - jnp.sum(n * eps) / N
+
+
+class Sinkhorn:
+    """(Bosonic) Sinkhorn algorithm"""
+
+    def __init__(
+        self,
+        N: int,
+        beta: float = 1.0,
+        old: bool = False,
+        anderson: bool = False,
+        implicit_diff: bool = True,
+        use_jacrev: bool = True,
+        maxiter: int = 100,
+        tol: float = 1e-10,
+        history_size: int = 5,
+        mixing_frequency: int = 1,
+        anderson_beta: float = 1,
+        ridge: float = 1e-05,
+    ):
+        self._N = N
+        self._beta = beta
+
+        self._fixed_point = partial(
+            fixed_point, N=N, beta=beta, old=old, with_aux=not anderson
+        )
+
+        if anderson:
+            self._optimizer = AndersonAcceleration(
+                self._fixed_point,
+                history_size=history_size,
+                mixing_frequency=mixing_frequency,
+                beta=anderson_beta,
+                maxiter=maxiter,
+                tol=tol,
+                ridge=ridge,
+                implicit_diff=implicit_diff,
+                jit=True,
+            )
+        else:
+            self._optimizer = FixedPointIteration(
+                self._fixed_point,
+                maxiter=maxiter,
+                tol=tol,
+                has_aux=True,
+                implicit_diff=implicit_diff,
+                jit=True,
+            )
+
+        def _run_GC_guess(n: jnp.ndarray) -> OptStep:
+            eps = eps_GC_guess(n, beta)
+            eps = normalize_eps(n, eps, N)
+            return self._optimizer.run(eps, n)
+
+        def _run_eps_only(n: jnp.ndarray, eps: jnp.ndarray) -> jnp.ndarray:
+            return self._optimizer.run(eps, n).params
+
+        self._run_GC_guess = jit(_run_GC_guess)
+        self.run_parallel = jit(vmap(self._run_GC_guess, in_axes=0))
+        self.deps_dn = jit(jacrev(_run_eps_only, argnums=0))
+
+        self.compute_occupations = jit(lambda eps: compute_occupations(eps, N, beta))
+        if use_jacrev:
+            self.dn_deps = jit(jacrev(self.compute_occupations, argnums=0))
+        else:
+            self.dn_deps = jit(jacfwd(self.compute_occupations, argnums=0))
+
+    def run(self, n: jnp.ndarray, eps: jnp.ndarray = None) -> OptStep:
+        """Run the Sinkhorn algorithm
+
+        Parameters
+        ----------
+        n : 1-dimensional ndarray
+          The occupation numbers
+        eps : 1-dimensional ndarray, optional
+          The starting orbital energies, default is grand canonical guess
+
+        Returns
+        --------
+        eps : 1-dimensional ndarray
+          The updated orbital energies"""
+
+        if eps is None:
+            return self._run_GC_guess(n)
+        else:
+            return self._optimizer.run(eps, n)
+
+    def compute_correlations(self, n: jnp.ndarray, eps: jnp.ndarray) -> jnp.ndarray:
+        """Compute the correlations
+
+        Parameters
+        ----------
+        n : 1-dimensional ndarray
+          The occupation numbers
+        eps : 1-dimensional ndarray
+          The orbital energies
+
+        Returns
+        --------
+        correlations : 1-dimensional ndarray
+          The correlations"""
+
+        return jnp.outer(n, n) - self.dn_deps(eps)
 
 
 def sinkhorn(
@@ -273,8 +522,6 @@ def sinkhorn(
       The convergence threshold, default is 10**-10
     old : bool, optional
       Whether to use the ``naive`` Sinkhorn, default is using Fermionic Sinkhorn
-    comp_correlations : bool, optional
-      Whether to compute the correlations <\hat{n}_p \hat{n}_q> as well, default is not
     degen_cutoff : float, optional
       The cutoff for degenerate levels, default is 10**-7
     verbose : bool, optional
@@ -359,25 +606,6 @@ def sinkhorn(
     # Compute entropy, note that this assumes that the orbital energies are shifted
     S = -beta * F[-1]
 
-    if comp_correlations:
-        correlations = compute_correlations(n, eps, F, beta).block_until_ready()
-
-        # Compute the degenerate level correlations if they are present
-        degens = jnp.where(
-            jnp.abs(
-                jnp.ones((norb, norb)) * jnp.exp(beta * eps)
-                - (jnp.ones((norb, norb)) * jnp.exp(beta * eps)).T
-                + jnp.eye(norb)
-            )
-            < degen_cutoff
-        )
-        if degens[0].size > 0:
-            correlations = correlations.at[degens[0], degens[1]].set(
-                compute_correlations_degen_vmap(
-                    jnp.vstack((eps[degens[0]], eps[degens[1]])), F, beta
-                ).block_until_ready()
-            )
-
     # Pack the results in a dictionary
     result["eps"] = eps
     result["errors"] = errors
@@ -386,6 +614,4 @@ def sinkhorn(
     result["eps_GC"] = eps_GC
     result["S_GC"] = S_GC
     result["n_approx"] = n_approx
-    if comp_correlations:
-        result["correlations"] = correlations
     return result
