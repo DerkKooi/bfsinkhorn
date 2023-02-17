@@ -1,4 +1,5 @@
 from functools import partial
+from typing import Dict, Union
 
 from jax import jit, vmap, lax, jacfwd, jacrev
 import jax.numpy as jnp
@@ -267,7 +268,7 @@ def compute_correlations_full(
 
 
 @partial(jit, static_argnums=(1))
-def compute_occupations(eps: jnp.ndarray, N: int, beta=1.0):
+def compute_occupations(eps: jnp.ndarray, N: int = 2, beta: float = 1.0):
     r"""Compute the occupation numbers for a given set of orbital energies
 
     Parameters
@@ -297,14 +298,13 @@ def compute_occupations(eps: jnp.ndarray, N: int, beta=1.0):
     return n
 
 
-@partial(jit, static_argnums=(2, 4, 5))
+@partial(jit, static_argnums=(2, 4))
 def fixed_point(
     eps: jnp.ndarray,
     n: jnp.ndarray,
     N: int = 2,
     beta: float = 1.0,
     old: bool = False,
-    with_aux: bool = True,
 ) -> jnp.ndarray:
     r"""Compute the fixed point of the (Bosonic) Sinkhorn algorithm
 
@@ -320,15 +320,11 @@ def fixed_point(
       Inverse temperature
     old : bool
       Whether to use the old version of the Sinkhorn algorithm
-    with_aux : bool
-      Whether to return the auxiliary occupation numbers
 
     Returns
     --------
     eps : 1-dimensional ndarray
       The updated orbital energies
-    n : 1-dimensional ndarray
-      The auxiliary occupation numbers (if with_aux=True)
     """
 
     # Compute free energy
@@ -343,14 +339,7 @@ def fixed_point(
     else:
         eps_new = -jnp.log(n / (1 + n)) / beta + Fp[:, 1] - Fp[:, 0]
 
-    eps_new = eps_new - jnp.sum(n * eps_new) / N
-
-    if with_aux:
-        # Compute occupation numbers
-        n_approx = jnp.exp(-beta * (eps + Fp[:, 0] - F[N]))
-        return eps_new, n_approx
-    else:
-        return eps_new
+    return eps_new - jnp.sum(n * eps_new) / N
 
 
 @jit
@@ -367,6 +356,21 @@ def eps_GC_guess(n: jnp.ndarray, beta: float) -> jnp.ndarray:
     eps : 1-dimensional ndarray
       The orbital energies"""
     return -jnp.log(n / (1 + n)) / beta
+
+
+def compute_S_GC(n: jnp.ndarray, beta: float) -> float:
+    """Compute the grand canonical entropy
+
+    Parameters
+    ----------
+    n : 1-dimensional ndarray
+      The occupation numbers
+
+    Returns
+    --------
+    S : float
+      The grand canonical entropy"""
+    return -jnp.sum(xlogy(n, n) + xlogy(1 - n, 1 - n)) / beta
 
 
 @partial(jit, static_argnums=(2))
@@ -402,6 +406,7 @@ class Sinkhorn:
         use_jacrev: bool = True,
         maxiter: int = 100,
         tol: float = 1e-10,
+        verbose: bool = False,
         history_size: int = 5,
         mixing_frequency: int = 1,
         anderson_beta: float = 1,
@@ -409,12 +414,12 @@ class Sinkhorn:
     ):
         self._N = N
         self._beta = beta
+        self._method = "anderson" if anderson else "fixed_point"
 
-        self._fixed_point = partial(
-            fixed_point, N=N, beta=beta, old=old, with_aux=not anderson
-        )
+        self._fixed_point = partial(fixed_point, N=N, beta=beta, old=old)
 
         if anderson:
+            # Anderson acceleration does not offer an andvantage unless old is True
             self._optimizer = AndersonAcceleration(
                 self._fixed_point,
                 history_size=history_size,
@@ -423,17 +428,18 @@ class Sinkhorn:
                 maxiter=maxiter,
                 tol=tol,
                 ridge=ridge,
+                verbose=verbose,
                 implicit_diff=implicit_diff,
-                jit=True,
+                jit=not verbose,
             )
         else:
             self._optimizer = FixedPointIteration(
                 self._fixed_point,
                 maxiter=maxiter,
                 tol=tol,
-                has_aux=True,
+                verbose=verbose,
                 implicit_diff=implicit_diff,
-                jit=True,
+                jit=not verbose,
             )
 
         def _run_GC_guess(n: jnp.ndarray) -> OptStep:
@@ -454,7 +460,25 @@ class Sinkhorn:
         else:
             self.dn_deps = jit(jacfwd(self.compute_occupations, argnums=0))
 
-    def run(self, n: jnp.ndarray, eps: jnp.ndarray = None) -> OptStep:
+        self.compute_free_energy = jit(lambda eps: compute_free_energy(eps, N, beta))
+
+    def compute_entropy(self, eps: jnp.ndarray) -> jnp.ndarray:
+        """Compute the entropy of the system
+
+        Parameters
+        ----------
+        eps : 1-dimensional ndarray
+          The orbital energies
+
+        Returns
+        --------
+        S : 1-dimensional ndarray
+          The entropy"""
+        return -self._beta * self.compute_free_energy[-1]
+
+    def run(
+        self, n: jnp.ndarray, eps: jnp.ndarray = None
+    ) -> Dict[str, Union[jnp.ndarray, int, float]]:
         """Run the Sinkhorn algorithm
 
         Parameters
@@ -470,12 +494,37 @@ class Sinkhorn:
           The updated orbital energies"""
 
         if eps is None:
-            return self._run_GC_guess(n)
+            new_eps, state = self._run_GC_guess(n)
         else:
-            return self._optimizer.run(eps, n)
+            new_eps, state = self._optimizer.run(eps, n)
+        n_approx = self.compute_occupations(new_eps)
+        n_error = jnp.sum(jnp.abs(n - n_approx))
+        F = self.compute_free_energy(new_eps)
+        results = {
+            "eps": new_eps,
+            "n_approx": n_approx,
+            "eps_error": state.error,
+            "n_error": n_error,
+            "iter_num": state.iter_num,
+            "F": F,
+            "S": -self._beta * F,
+            "eps_gc": eps_GC_guess(n, self._beta),
+            "S_GC": compute_S_GC(n, self._beta),
+        }
+        if self._method == " anderson":
+            results.update(
+                {
+                    "params_history": state.params_history,
+                    "residual_gram": state.residual_gram,
+                    "residuals_history": state.residuals_history,
+                }
+            )
+        return results
 
     def compute_correlations(self, n: jnp.ndarray, eps: jnp.ndarray) -> jnp.ndarray:
-        """Compute the correlations
+        r"""Compute the correlations
+
+        This is equalt to :math:`n_i n_j - \frac{\partial n_i}{\partial \epsilon_j}`
 
         Parameters
         ----------
@@ -500,8 +549,6 @@ def sinkhorn(
     max_iters=100,
     threshold=10**-10,
     old=False,
-    comp_correlations=False,
-    degen_cutoff=10**-7,
     verbose=True,
 ):
     r"""(Bosonic) Sinkhorn algorithm

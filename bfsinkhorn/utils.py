@@ -3,7 +3,7 @@ import jax.numpy as jnp
 
 
 @jit
-def log1mexp(a):
+def log1mexp(a: float) -> float:
     r"""Computes log(1 - exp(-a)) for a > 0
 
     This should be stable whether or not a is above or below log(2)
@@ -24,7 +24,7 @@ def log1mexp(a):
 
 
 @jit
-def minlogsumminexp(exponents):
+def minlogsumminexp(exponents: jnp.ndarray) -> float:
     r"""Calculate minus the log of the sum of exponents
 
     This is done in a stable way by shifting the exponents (log-sum-exp trick)
@@ -44,7 +44,7 @@ def minlogsumminexp(exponents):
 
 
 @jit
-def minlogsumminexp_array(exponents):
+def minlogsumminexp_array(exponents: jnp.ndarray) -> jnp.ndarray:
     r"""Calculate minus the log of the multiple sums of exponents for an array
 
     This is done in a stable way by shifting the exponents (log-sum-exp trick)

@@ -42,8 +42,8 @@ def test_bosonic_sinkhorn_class():
 
     # Check if inversion works
     sinkhorn = bfsinkhorn.boson.Sinkhorn(N, tol=1e-12, maxiter=1000, anderson=True)
-    params, _ = sinkhorn.run(n)
-    assert jnp.allclose(params, eps)
+    results = sinkhorn.run(n)
+    assert jnp.allclose(results["eps"], eps)
 
     return
 
