@@ -1,6 +1,76 @@
+[project]
+name = "bfsinkhorn"
+description = "A package to calculate (non-interacting) orbital energies for 1-body Reduced Density Matrix Functional Theory in the canonical ensemble"
+version = "0.1.0"
+authors = [
+    { name = "Derk P. Kooi", email = "derkkooi@gmail.com" }
+]
+maintainers = [
+    { name = "Derk P. Kooi", email = "derkkooi@gmail.com" }
+]
+classifiers=[
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+# long_description= """A python package to calculate (non-interacting) orbital energies for 1-body Reduced Density Matrix Functional Theory in the canonical ensemble
+
+# See for details:
+# D.P. Kooi, 2022. Efficient Bosonic and Fermionic Sinkhorn Algorithms for Non-Interacting Ensembles in One-body Reduced Density Matrix Functional Theory in the Canonical Ensemble.
+# """
+license={file = "LICENSE"}
+requires-python = ">=3.7"
+dependencies = [
+    "numpy",
+    "scipy",
+    "jax>=0.3.7",
+    "jaxlib>=0.3.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit",
+    "pytest",
+]
+
+[project.urls]
+homepage="https://github.com/DerkKooi/bfsinkhorn"
+
+[build-system]
+requires = [
+  "setuptools >= 40.9.0",
+]
+build-backend = "setuptools.build_meta"
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 addopts = "-ra -q"
 testpaths = [
     "tests",
 ]
+
+[tool.isort]
+profile = "black"
+src_paths = ["bfsinkhorn", "tests"]
+
+[tool.ruff]
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
+select = ["E", "F"]
+ignore = []
+
+fixable = ["ALL"]
+unfixable = []
+
+# Same as Black.
+line-length = 100
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+# Assume Python 3.10.
+target-version = "py38"
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+include = '\.pyi?$'

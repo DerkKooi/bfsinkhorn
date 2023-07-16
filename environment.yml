@@ -6,9 +6,7 @@ dependencies:
   - numpy
   - scipy
   - jupyter
-  - matplotlib
   - jax
   - jaxlib>=0.3.7
   - pip
-  - pip:
-    - pyscf
+  - pyscf

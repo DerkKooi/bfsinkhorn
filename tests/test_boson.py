@@ -1,18 +1,18 @@
 # Import bfsinkhorn
+import jax.numpy as jnp
+
+# Import jax config and numpy and set floats to 64-bit
+from jax.config import config
+
 import bfsinkhorn
 
 # Import bosonic package
 import bfsinkhorn.boson
 
-# Import jax config and numpy and set floats to 64-bit
-from jax.config import config
-import jax.numpy as jnp
-
 config.update("jax_enable_x64", True)
 
 
 def test_bosonic_sinkhorn():
-
     # Fake orbital energies -> fake occupations
     eps = jnp.array([0.0, 0.2, 0.2, 1.0, 5.0, 10.0, 20.0])
     N = 3
@@ -30,7 +30,6 @@ def test_bosonic_sinkhorn():
 
 
 def test_bosonic_sinkhorn_class():
-
     # Fake orbital energies -> fake occupations
     eps = jnp.array([0.0, 0.2, 0.2, 1.0, 5.0, 10.0, 20.0])
     N = 3
