@@ -17,17 +17,13 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-
-
     - name: Set up Python and install dependencies
-      uses: mamba-org/provision-with-micromamba@main
+      uses: mamba-org/setup-micromamba@v1
       with:
         environment-file: environment.yml
-        extra-specs: |
-          python=${{ matrix.python-version }}
+        create-args: python=${{ matrix.python-version }}
         cache-downloads: true
-        cache-env: true
-
+        cache-environment: true
     - name: Install bfsinkhorn
       run: pip install .[dev]
     - name: Test with pytest
