@@ -25,6 +25,7 @@ dependencies = [
     "scipy",
     "jax>=0.3.7",
     "jaxlib>=0.3.7",
+    "jaxopt",
 ]
 
 [project.optional-dependencies]
