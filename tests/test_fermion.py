@@ -16,7 +16,7 @@ def test_fermionic_sinkhorn():
     # Fake orbital energies -> fake occupations
     eps = jnp.array([0.0, 0.2, 0.2, 1.0, 5.0, 10.0, 20.0])
     N = 3
-    n = bfsinkhorn.fermion.compute_occupations(eps, N)
+    n = bfsinkhorn.fermion.compute_occupations(eps, N, 1.0)
     assert n.shape == eps.shape
 
     # Shift orbital energies to match sinkhorn default
