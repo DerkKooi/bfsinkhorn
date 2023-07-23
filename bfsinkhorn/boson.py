@@ -1,57 +1,33 @@
-from functools import partial
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Tuple, Union
 
+import equinox as eqx
 import jax.numpy as jnp
 from jax import jacfwd, jacrev, jit, lax, vmap
 from jax.scipy.special import xlogy
 from jaxopt import AndersonAcceleration, FixedPointIteration
-from jaxopt._src.base import OptStep
+from jaxopt.base import IterativeSolver, OptStep
 
 from .utils import minlogsumminexp, minlogsumminexp_array, minlogsumminexp_vmap
 
 
-@partial(jit, static_argnums=(1,))
-def compute_free_energy(eps: jnp.ndarray, N: int, beta: float) -> jnp.ndarray:
-    r"""
-    Compute bosonic free energies
+@jit
+def normalize_eps(n: jnp.ndarray, eps: jnp.ndarray) -> jnp.ndarray:
+    """
+    Normalize the orbital energies
 
     Parameters
     ----------
+    n : 1-dimensional ndarray
+    The occupation numbers
     eps : 1-dimensional ndarray
-      The orbital energies
-    N : int, static
-      The number of particles
-    beta : float
-      Inverse temperature
+    The orbital energies
 
     Returns
     --------
-    F : 1-dimensional ndarray of length N+1
-      The free energy F_M for M=0 to M=N
+    new_eps : 1-dimensional ndarray
+    The normalized orbital energies
     """
-
-    # First compute D_k = -1/\beta \log(\sum_p e^{-\beta k \eps_p})
-    # in ascending order with inf pad on the left
-    D = jnp.ones(2 * N - 1) * jnp.inf
-    k = jnp.arange(1, N + 1)
-    D = D.at[N - 1 :].set(minlogsumminexp_vmap(k, beta * eps) / beta)
-
-    # Build array for free energies in descending order (!),
-    # initialize at inf, except for M=0: free energy is zero
-    F = jnp.ones(N + 1) * jnp.inf
-    F = F.at[N].set(0)
-
-    # Compute free energies iteratively for M=1 to M=N
-    # We use some padding tricks such that
-    # the slices are the same size for every iteration.
-    def inner_loop(i, F):
-        exponents = lax.dynamic_slice(D, [i - 1], [N]) + F[1 : N + 1]
-        F = F.at[N - i].set((minlogsumminexp(beta * exponents) + jnp.log(i)) / beta)
-        return F
-
-    F = lax.fori_loop(1, N + 1, inner_loop, F)
-
-    return jnp.flip(F)
+    return eps - jnp.sum(n * eps) / jnp.sum(n)
 
 
 @jit
@@ -92,6 +68,52 @@ def compute_aux_free_energy(eps: jnp.ndarray, F: jnp.ndarray, beta: jnp.ndarray)
     Fp = Fp.at[1].set(minlogsumminexp(beta * exponents) / beta)
 
     return Fp
+
+
+@jit
+def eps_GC_guess(n: jnp.ndarray, beta: float) -> jnp.ndarray:
+    """
+    Compute the grand canonical guess for the orbital energies
+
+    Parameters
+    ----------
+    n : 1-dimensional ndarray
+      The occupation numbers
+
+    Returns
+    --------
+    eps_GC : 1-dimensional ndarray
+      The orbital energies
+    """
+    return -jnp.log(n / (1 + n)) / beta
+
+
+@jit
+def compute_S_GC(n: jnp.ndarray, beta: float) -> float:
+    """
+    Compute the grand canonical entropy
+
+    Parameters
+    ----------
+    n : 1-dimensional ndarray
+      The occupation numbers
+
+    Returns
+    --------
+    S_GC : float
+      The grand canonical entropy
+    """
+    return -jnp.sum(xlogy(n, n) + xlogy(1 + n, 1 + n)) / beta
+
+
+@jit
+def eps_update(n: jnp.ndarray, _: float, Fp: jnp.ndarray, beta: float) -> jnp.ndarray:
+    return -jnp.log(n / (1 + n)) / beta + Fp[:, 1] - Fp[:, 0]
+
+
+@jit
+def eps_update_old(n: jnp.ndarray, FN: float, Fp: jnp.ndarray, beta: float) -> jnp.ndarray:
+    return -jnp.log(n) / beta + FN - Fp[:, 0]
 
 
 # vmap of compute_aux_free_energy over orbital energies
@@ -267,148 +289,17 @@ def compute_correlations_full(
     return correlations
 
 
-@partial(jit, static_argnums=(1,))
-def compute_occupations(eps: jnp.ndarray, N: int, beta: float) -> jnp.ndarray:
-    r"""
-    Compute the occupation numbers for a given set of orbital energies
-
-    Parameters
-    ----------
-    eps : 1-dimensional ndarray
-      The orbital energies
-    N : int
-      The number of particles
-    beta : float
-      Inverse temperature
-
-    Returns
-    --------
-    n : 1-dimensional ndarray
-      The occupation numbers
-    """
-
-    # Compute free energy
-    F = compute_free_energy(eps, N, beta)
-
-    # Compute auxiliary free energy
-    Fp = compute_aux_free_energy_vmap(eps, F, beta)
-
-    # Compute occupations
-    n = jnp.exp(-beta * (eps + Fp[:, 0] - F[N]))
-
-    return n
-
-
-@partial(jit, static_argnums=(3, 4))
-def fixed_point(
-    eps: jnp.ndarray,
-    n: jnp.ndarray,
-    beta: float = 1.0,
-    N: int = 2,
-    old: bool = False,
-) -> jnp.ndarray:
-    r"""
-    Compute the orbital energies given the (Bosonic) Sinkhorn algorithm
-
-    Note that the orbital energies are normalized in the last step
-
-    Parameters
-    ----------
-    eps : 1-dimensional ndarray
-      The orbital energies
-    n : 1-dimensional ndarray
-      The occupation numbers
-    N : int
-      The number of particles, default is 2
-    beta : float
-      Inverse temperature
-    old : bool
-      Whether to use the old version of the Sinkhorn algorithm
-
-    Returns
-    --------
-    eps : 1-dimensional ndarray
-      The updated orbital energies
-    """
-
-    # Fix norm in n
-    n = n / jnp.sum(n) * N
-
-    # Compute free energy
-    F = compute_free_energy(eps, N, beta)
-
-    # Compute auxiliary free energy
-    Fp = compute_aux_free_energy_vmap(eps, F, beta)
-
-    # Compute new orbital energies
-    if old:
-        eps_new = -jnp.log(n) / beta + F[-1] - Fp[:, 0]
-    else:
-        eps_new = -jnp.log(n / (1 + n)) / beta + Fp[:, 1] - Fp[:, 0]
-
-    return eps_new - jnp.sum(n * eps_new) / N
-
-
-@jit
-def eps_GC_guess(n: jnp.ndarray, beta: float) -> jnp.ndarray:
-    """
-    Compute the grand canonical guess for the orbital energies
-
-    Parameters
-    ----------
-    n : 1-dimensional ndarray
-      The occupation numbers
-
-    Returns
-    --------
-    eps_GC : 1-dimensional ndarray
-      The orbital energies
-    """
-    return -jnp.log(n / (1 + n)) / beta
-
-
-@jit
-def compute_S_GC(n: jnp.ndarray, beta: float) -> float:
-    """
-    Compute the grand canonical entropy
-
-    Parameters
-    ----------
-    n : 1-dimensional ndarray
-      The occupation numbers
-
-    Returns
-    --------
-    S_GC : float
-      The grand canonical entropy
-    """
-    return -jnp.sum(xlogy(n, n) + xlogy(1 + n, 1 + n)) / beta
-
-
-@partial(jit, static_argnums=(2,))
-def normalize_eps(n: jnp.ndarray, eps: jnp.ndarray, N: int) -> jnp.ndarray:
-    """
-    Normalize the orbital energies
-
-    Parameters
-    ----------
-    n : 1-dimensional ndarray
-      The occupation numbers
-    eps : 1-dimensional ndarray
-      The orbital energies
-    N : int
-
-    Returns
-    --------
-    new_eps : 1-dimensional ndarray
-      The normalized orbital energies
-    """
-
-    return eps - jnp.sum(n * eps) / N
-
-
-class Sinkhorn:
+class Sinkhorn(eqx.Module):
     """(Bosonic) Sinkhorn algorithm"""
+
+    N: int
+    old: bool
+    anderson: bool
+    use_jacrev_deps_dn: bool
+    use_jacrev_d2eps_dn2: bool
+    use_jacrev_dn_deps: bool
+    use_jacrev_d2n_deps2: bool
+    _optimizer: IterativeSolver
 
     def __init__(
         self,
@@ -423,16 +314,26 @@ class Sinkhorn:
         mixing_frequency: int = 1,
         anderson_beta: float = 1,
         ridge: float = 1e-5,
+        use_jacrev_deps_dn: bool = True,
+        use_jacrev_d2eps_dn2: bool = True,
+        use_jacrev_dn_deps: bool = False,
+        use_jacrev_d2n_deps2: bool = False,
     ):
         self.N = N
-        self.method = "anderson" if anderson else "fixed_point"
+        self.old = old
+        self.anderson = anderson
+        self.use_jacrev_deps_dn = use_jacrev_deps_dn
+        self.use_jacrev_d2eps_dn2 = use_jacrev_d2eps_dn2
+        self.use_jacrev_dn_deps = use_jacrev_dn_deps
+        self.use_jacrev_d2n_deps2 = use_jacrev_d2n_deps2
 
-        self._fixed_point = jit(partial(fixed_point, N=N, old=old))
+        if implicit_diff and (not use_jacrev_deps_dn or not use_jacrev_d2eps_dn2):
+            raise ValueError("Implicit diff requires using jacrev for both deps_dn and d2eps_dn2")
 
         if anderson:
             # Anderson acceleration does not seem to offer any advantage unless old is true
             self._optimizer = AndersonAcceleration(
-                self._fixed_point,
+                self.fixed_point,
                 history_size=history_size,
                 mixing_frequency=mixing_frequency,
                 beta=anderson_beta,
@@ -445,7 +346,7 @@ class Sinkhorn:
             )
         else:
             self._optimizer = FixedPointIteration(
-                self._fixed_point,
+                self.fixed_point,
                 maxiter=maxiter,
                 tol=tol,
                 verbose=verbose,
@@ -453,79 +354,226 @@ class Sinkhorn:
                 jit=not verbose,
             )
 
-        def _run_GC_guess(n: jnp.ndarray, beta: float = 1.0) -> OptStep:
-            """
-            Run the Sinkhorn algorithm with the grand canonical guess
+    def compute_free_energy(self, eps: jnp.ndarray, beta: float) -> jnp.ndarray:
+        r"""
+        Compute bosonic free energies
 
-            Parameters
-            ----------
-            n : 1-dimensional ndarray
-              The occupation numbers
-            beta : float
-              Inverse temperature
+        Parameters
+        ----------
+        eps : 1-dimensional ndarray
+        The orbital energies
+        beta : float
+        Inverse temperature
 
-            Returns
-            --------
-            OptStep
-              The result of the optimization
-            """
-            eps = eps_GC_guess(n, beta)
-            eps = normalize_eps(n, eps, N)
-            return self._optimizer.run(eps, n, beta)
+        Returns
+        --------
+        F : 1-dimensional ndarray of length N+1
+        The free energy F_M for M=0 to M=N
+        """
 
-        def _run_eps_only(n: jnp.ndarray, eps0: jnp.ndarray, beta: float = 1.0) -> jnp.ndarray:
-            """
-            Run the Sinkhorn algorithm with eps0 as the guess
+        # First compute D_k = -1/\beta \log(\sum_p e^{-\beta k \eps_p})
+        # in ascending order with inf pad on the left
+        D = jnp.ones(2 * self.N - 1) * jnp.inf
+        k = jnp.arange(1, self.N + 1)
+        D = D.at[self.N - 1 :].set(minlogsumminexp_vmap(k, beta * eps) / beta)
 
-            Return only the orbital energies for differentiation.
+        # Build array for free energies in descending order (!),
+        # initialize at inf, except for M=0: free energy is zero
+        F = jnp.ones(self.N + 1) * jnp.inf
+        F = F.at[self.N].set(0)
 
-            Parameters
-            ----------
-            n : 1-dimensional ndarray
-              The occupation numbers
-            eps0 : 1-dimensional ndarray
-              The orbital energies
-            beta : float
-              Inverse temperature, default is 1
+        # Compute free energies iteratively for M=1 to M=N
+        # We use some padding tricks such that
+        # the slices are the same size for every iteration.
+        def inner_loop(i, F):
+            exponents = lax.dynamic_slice(D, [i - 1], [self.N]) + F[1 : self.N + 1]
+            F = F.at[self.N - i].set((minlogsumminexp(beta * exponents) + jnp.log(i)) / beta)
+            return F
 
-            Returns
-            --------
-            eps : 1-dimensional ndarray
-              The orbital energies
-            """
-            return self._optimizer.run(eps0, n, beta).params
+        F = lax.fori_loop(1, self.N + 1, inner_loop, F)
 
-        self._run_GC_guess = jit(_run_GC_guess)
+        return jnp.flip(F)
 
-        # Parallelize over multiple systems
-        self.run_parallel = jit(vmap(_run_GC_guess, in_axes=(0, None)))
+    def compute_occupations(self, eps: jnp.ndarray, beta: float) -> jnp.ndarray:
+        r"""
+        Compute the occupation numbers for a given set of orbital energies
 
-        # Calculate the orbital energies
-        self._run_eps_only = jit(_run_eps_only)
+        Parameters
+        ----------
+        eps : 1-dimensional ndarray
+        The orbital energies
+        beta : float
+        Inverse temperature
 
-        # Calculate the derivatives of the orbital energies with respect to the occupation numbers
-        # This is dodgy because only certain variations of n are allowed
-        self.deps_dn = jit(jacrev(_run_eps_only, argnums=0))
-        if implicit_diff is False:
-            self.deps_dn_fwd = jit(jacfwd(_run_eps_only, argnums=0))
+        Returns
+        --------
+        n : 1-dimensional ndarray
+        The occupation numbers corresponding to eps and beta
+        """
 
-        # Calculate the occupation numbers and derivatives w.r.t the orbital energies
-        self.compute_occupations = jit(lambda eps, beta=1.0: compute_occupations(eps, self.N, beta))
+        # Compute free energy
+        F = self.compute_free_energy(eps, beta)
 
-        # Note that there is a zero singular value for eps all shifting the same amount
-        self.dn_deps = jit(jacfwd(self.compute_occupations, argnums=0))
-        self.dn_deps_rev = jit(jacrev(self.compute_occupations, argnums=0))
+        # Compute auxiliary free energy
+        Fp = compute_aux_free_energy_vmap(eps, F, beta)
 
-        self.d2n_deps2 = jit(jacfwd(jacfwd(self.compute_occupations, argnums=0), argnums=0))
-        self.d2n_deps2_rev = jit(jacfwd(jacrev(self.compute_occupations, argnums=0), argnums=0))
+        # Compute occupations
+        n = jnp.exp(-beta * (eps + Fp[:, 0] - F[self.N]))
 
-        # Calculate the free energy and entropy
-        self.compute_free_energy = jit(lambda eps, beta=1.0: compute_free_energy(eps, self.N, beta))
-        self.compute_entropy = jit(lambda eps, beta=1.0: -beta * self.compute_free_energy(eps))
+        return n
 
-    def run(
-        self, n: jnp.ndarray, eps: Optional[jnp.ndarray] = None, beta: float = 1.0
+    def fixed_point(
+        self,
+        eps: jnp.ndarray,
+        n: jnp.ndarray,
+        beta: float,
+    ) -> jnp.ndarray:
+        r"""
+        Compute the orbital energies from a (Bosonic) Sinkhorn step
+
+        Note that the orbital energies are normalized such that
+        \sum_p n_p eps_p = 0
+
+        Parameters
+        ----------
+        eps : 1-dimensional ndarray
+        The orbital energies
+        n : 1-dimensional ndarray
+        The occupation numbers
+        beta : float
+        Inverse temperature
+
+        Returns
+        --------
+        eps : 1-dimensional ndarray
+        The updated orbital energies
+        """
+
+        # Fix norm in n
+        n = n / jnp.sum(n) * self.N
+
+        # Compute free energy
+        F = self.compute_free_energy(eps, beta)
+
+        # Compute auxiliary free energy
+        Fp = compute_aux_free_energy_vmap(eps, F, beta)
+
+        # Compute new orbital energies
+        eps = lax.cond(self.old, eps_update_old, eps_update, *(n, F[-1], Fp, beta))
+
+        return normalize_eps(n, eps)
+
+    def run_sinkhorn_fixed_iters(
+        self, n: jnp.ndarray, beta: float, eps: Optional[jnp.ndarray] = None, n_iters: int = 100
     ) -> Dict[str, Union[jnp.ndarray, int, float]]:
+        """
+        Run the Sinkhorn algorithm with fixed number of iterations with GC guess
+
+        Parameters
+        ----------
+        n : 1-dimensional ndarray
+          The occupation numbers
+        beta : float
+            Inverse temperature
+        eps : 1-dimensional ndarray
+          The orbital energies
+        niter : int
+            Number of iterations to run
+
+        Returns
+        -------
+        results : dict
+            Dictionary containing the results
+                eps : 1-dimensional ndarray
+                The resulting orbital energies
+                n_approx : 1-dimensional ndarray
+                The computed occupation numbers from the orbital energies
+                eps_error : float
+                The error in the orbital energies
+                n_error : 1-dimensional ndarray
+                The error in the occupation numbers
+                iter_num : int
+                The number of iterations
+                F : np.ndarray
+                The free energies for M=0 to M=N
+                S : float
+                The entropy
+        """
+        # Make sure n is normalized
+        n = n / jnp.sum(n) * self.N
+
+        # Initialize eps if necessary
+
+        eps_GC = eps_GC_guess(n, beta)
+        if eps is None:
+            eps = eps_GC
+
+        init_n_error = jnp.sum(jnp.abs(n - self.compute_occupations(eps, beta)))
+
+        # Initialize the state
+        state = self._optimizer.init_state(eps, n, beta)
+        step = self._optimizer.update(eps, state, n, beta)
+
+        # Function to take an optimizer step
+        def take_step(step: OptStep, _) -> Tuple[OptStep, float]:
+            step = self._optimizer.update(*step, n, beta)
+            current_n = self.compute_occupations(step.params, beta)
+            return step, jnp.sum(jnp.abs(current_n - n))
+
+        # Run iterations
+        step, n_error = lax.scan(take_step, step, jnp.arange(n_iters))
+
+        # Unpack step and return results in dictionary
+        eps, state = step.params, step.state
+        n_approx = self.compute_occupations(eps, beta)
+        F = self.compute_free_energy(eps, beta)
+        results = {
+            "eps": eps,
+            "n_approx": n_approx,
+            "eps_error": state.error,
+            "n_error": jnp.concatenate([jnp.array([init_n_error]), n_error]),
+            "iter_num": n_iters,
+            "F": F,
+            "S": -beta * F[-1],
+        }
+        if self.anderson:
+            results.update(
+                {
+                    "params_history": state.params_history,
+                    "residual_gram": state.residual_gram,
+                    "residuals_history": state.residuals_history,
+                }
+            )
+        results["eps_GC"] = eps_GC
+        results["S_GC"] = compute_S_GC(eps_GC, beta)
+
+        return results
+
+    def _run_eps_only(self, n: jnp.ndarray, eps: jnp.ndarray, beta: float) -> jnp.ndarray:
+        """
+        Run the Sinkhorn algorithm
+
+        Return only the orbital energies for use in automatic differentiation.
+
+        Parameters
+        ----------
+        n : 1-dimensional ndarray
+            The occupation numbers
+        eps : 1-dimensional ndarray
+            The orbital energies
+        beta : float
+            Inverse temperature
+
+        Returns
+        --------
+        eps : 1-dimensional ndarray
+            The converged orbital energies
+        """
+        return self._optimizer.run(eps, n, beta).params
+
+    def run_sinkhorn(
+        self, n: jnp.ndarray, beta: float, eps: Optional[jnp.ndarray] = None
+    ) -> jnp.ndarray:
         """
         Run the Sinkhorn algorithm
 
@@ -533,8 +581,8 @@ class Sinkhorn:
         ----------
         n : 1-dimensional ndarray
           The occupation numbers
-        eps : 1-dimensional ndarray, optional
-          The starting orbital energies, default is grand canonical guess
+        eps : 1-dimensional ndarray
+          The starting orbital energies
         beta : float
           Inverse temperature
 
@@ -556,31 +604,34 @@ class Sinkhorn:
               The free energies for M=0 to M=N
             S : float
               The entropy
-            eps_gc : 1-dimensional ndarray
-              The orbital energies from the grand canonical guess
-            S_GC : float
-              The entropy from the grand canonical guess
         """
+        # Make sure n is normalized
+        n = n / jnp.sum(n) * self.N
 
+        # Initialize eps if necessary
+        eps_GC = eps_GC_guess(n, beta)
         if eps is None:
-            new_eps, state = self._run_GC_guess(n, beta)
-        else:
-            new_eps, state = self._optimizer.run(eps, n, beta)
-        n_approx = self.compute_occupations(new_eps, beta)
+            eps = eps_GC
+
+        # Run the Sinkhorn algorithm
+        eps, state = self._optimizer.run(eps, n, beta)
+
+        # Compute all the results
+        n_approx = self.compute_occupations(eps, beta)
         n_error = jnp.sum(jnp.abs(n - n_approx))
-        F = self.compute_free_energy(new_eps, beta)
+        F = self.compute_free_energy(eps, beta)
         results = {
-            "eps": new_eps,
+            "eps": eps,
             "n_approx": n_approx,
             "eps_error": state.error,
             "n_error": n_error,
             "iter_num": state.iter_num,
             "F": F,
             "S": -beta * F[-1],
-            "eps_gc": eps_GC_guess(n, beta),
-            "S_GC": compute_S_GC(n, beta),
+            "eps_GC": eps_GC,
+            "S_GC": compute_S_GC(eps_GC, beta),
         }
-        if self.method == " anderson":
+        if self.anderson:
             results.update(
                 {
                     "params_history": state.params_history,
@@ -590,13 +641,11 @@ class Sinkhorn:
             )
         return results
 
-    def compute_correlations(
-        self, n: jnp.ndarray, eps: jnp.ndarray, beta: float = 1.0
-    ) -> jnp.ndarray:
-        r"""
-        Compute the two-point correlations < n_i n_j >
+    __call__ = run_sinkhorn
 
-        This is equal to :math:`n_i n_j - \frac{\partial n_i}{\partial \epsilon_j}`
+    def deps_dn(self, n: jnp.ndarray, eps: jnp.ndarray, beta: float) -> jnp.ndarray:
+        """
+        Compute the derivative of the orbital energies with respect to the occupation numbers
 
         Parameters
         ----------
@@ -609,10 +658,101 @@ class Sinkhorn:
 
         Returns
         --------
-        correlations : 1-dimensional ndarray
-          The correlations
+        deps_dn : 2-dimensional ndarray
+          The derivative of the orbital energies with respect to the occupation numbers
         """
-        return jnp.outer(n, n) - self.dn_deps(eps, beta)
+        if self.use_jacrev_deps_dn:
+            deriv = jacrev(self._run_eps_only, argnums=0)(n, eps, beta)
+        else:
+            deriv = jacfwd(self._run_eps_only, argnums=0)(n, eps, beta)
+
+        # The derivative does not have the desired properties that
+        # \sum_p \partial \epsilon_p / \partial n_q = 0
+        # \sum_q \partial \epsilon_p / \partial n_q = 0
+        # so we restore this by subtracting the projections
+
+        ones = jnp.ones_like(n) / n.shape[0]
+        return (
+            deriv
+            - jnp.outer(jnp.sum(deriv, axis=1), ones)
+            - jnp.outer(ones, jnp.sum(deriv, axis=0))
+            + jnp.outer(ones, ones) * jnp.sum(deriv)
+        )
+
+    def d2eps_dn2(self, n: jnp.ndarray, eps: jnp.ndarray, beta: float) -> jnp.ndarray:
+        """
+        Compute the second derivative of the orbital energies with respect to the occupation numbers
+
+        Parameters
+        ----------
+        n : 1-dimensional ndarray
+          The occupation numbers
+        eps : 1-dimensional ndarray
+          The orbital energies
+        beta : float
+          Inverse temperature
+
+        Returns
+        --------
+        d2eps_dn2 : 3-dimensional ndarray
+          The second derivative of the orbital energies with respect to the occupation numbers
+        """
+        if self.use_jacrev_d2eps_dn2:
+            deriv2 = jacrev(self.deps_dn, argnums=0)(n, eps, beta)
+        else:
+            deriv2 = jacfwd(self.deps_dn, argnums=0)(n, eps, beta)
+
+        # The derivative does not have the desired properties that
+        # \sum_r \partial^2 \epsilon_p / (\partial n_q \partial n_r) = 0
+        # so we restore this by subtracting the projection
+        ones = jnp.ones_like(n) / n.shape[0]
+        return deriv2 - jnp.sum(deriv2, axis=2)[:, :, None] * ones[None, None, :]
+
+    def dn_deps(self, eps: jnp.ndarray, beta: float) -> jnp.ndarray:
+        """
+        Compute the derivative of the occupation numbers with respect to the orbital energies
+
+        Parameters
+        ----------
+        eps : 1-dimensional ndarray
+          The orbital energies
+        beta : float
+          Inverse temperature
+
+        Returns
+        --------
+        dn_deps : 2-dimensional ndarray
+          The derivative of the occupation numbers with respect to the orbital energies
+        """
+        return lax.cond(
+            self.use_jacrev_dn_deps,
+            jacrev(self.compute_occupations, argnums=0),
+            jacfwd(self.compute_occupations, argnums=0),
+            *(eps, beta),
+        )
+
+    def d2n_deps2(self, eps: jnp.ndarray, beta: float) -> jnp.ndarray:
+        """
+        Compute the second derivative of the occupation numbers with respect to the orbital energies
+
+        Parameters
+        ----------
+        eps : 1-dimensional ndarray
+          The orbital energies
+        beta : float
+          Inverse temperature
+
+        Returns
+        --------
+        d2n_deps2 : 3-dimensional ndarray
+          The second derivative of the occupation numbers with respect to the orbital energies
+        """
+        return lax.cond(
+            self.use_jacrev_d2n_deps2,
+            jacrev(self.dn_deps, argnums=0),
+            jacfwd(self.dn_deps, argnums=0),
+            *(eps, beta),
+        )
 
     def compute_correlations(
         self, n: jnp.ndarray, eps: jnp.ndarray, beta: float = 1.0
@@ -665,8 +805,7 @@ class Sinkhorn:
         self,
         n: jnp.ndarray,
         eps: jnp.ndarray,
-        rdm2: Optional[jnp.ndarray] = None,
-        beta: float = 1.0,
+        beta: float,
     ) -> jnp.ndarray:
         r"""
         Compute the 3-RDM element :math`< a^\dagger_p a^\dagger_q a^\dagger_r a_r a_q a_p >`
@@ -690,8 +829,7 @@ class Sinkhorn:
             The diagonal elements of the 3-RDM
         """
         norb = n.shape[-1]
-        if rdm2 is None:
-            rdm2 = self.compute_rdm2(n, eps, beta)
+        rdm2 = self.compute_rdm2(n, eps, beta)
         nxn = jnp.outer(n, n)
         nxnxn = jnp.tensordot(n, nxn, axes=0)
         dxnxn = jnp.tensordot(jnp.diag(n), n, axes=0)
@@ -713,126 +851,3 @@ class Sinkhorn:
             - 2 * nxnxn
             + d2n_deps2
         )
-
-
-def sinkhorn(
-    n,
-    N,
-    beta=1.0,
-    eps=None,
-    max_iters=100,
-    threshold=10**-10,
-    old=False,
-    verbose=True,
-):
-    r"""(Bosonic) Sinkhorn algorithm
-
-    Parameters
-    ----------
-    n : 1-dimensional ndarray
-      The occupation numbers
-    N : int
-      The number of particles
-    beta : float, optional
-      The inverse temperature, default is 1.
-    eps : 1-dimensional ndarray, optional
-      The starting orbital energies, default is grand canonical guess
-    max_iters : int, optional
-      The maximum number of iterations, default is 100
-    threshold : float, optional
-      The convergence threshold, default is 10**-10
-    old : bool, optional
-      Whether to use the ``naive`` Sinkhorn, default is using Fermionic Sinkhorn
-    degen_cutoff : float, optional
-      The cutoff for degenerate levels, default is 10**-7
-    verbose : bool, optional
-      Whether to print the progress, default is True
-
-    Returns
-    --------
-    result : dictionary
-      The result of the algorithm with:
-      - 'converged' : bool
-        Whether the algorithm converged
-      - 'eps' : 1-dimensional ndarray
-        The orbital energies
-      - 'Q' : 1-dimensional ndarray
-        The partition function ratios
-      - 'errors' : list of floats
-        The errors of the algorithm at different iterations
-      - 'S' : float
-        The entropy of the system
-      - 'eps_GC' : 1-dimensional ndarray
-        The grand canonical orbital energies
-      - 'S_GC' : float
-        The entropy of the grand canonical system
-      - 'n_approx' : 1-dimensional ndarray
-        The approximate occupation numbers
-      - 'correlations' : ndarray with dimension (size(n), size(n))
-        The correlations <\hat{n}_p \hat{n}_q>
-    """
-
-    n.shape[0]
-    result = {}
-    result["converged"] = False
-
-    # Compute the orbital energies and entropy for the grand canonical ensemble
-    eps_GC = -jnp.log(n / (1 + n)) / beta
-    S_GC = -jnp.sum(xlogy(n, n) + xlogy(1 - n, 1 - n)) / beta
-
-    # Shift orbital energies such that \sum_p n_p \epsilon_p = 0.
-    if eps is None:
-        # Grand canonical guess for the orbital energies
-        eps = eps_GC - jnp.sum(n * eps_GC) / N
-    else:
-        eps = eps - jnp.sum(n * eps) / N
-
-    # Perform Sinkhorn iterations and store error at every iteration
-    errors = []
-    for i in range(max_iters + 1):
-        # Compute free energies
-        F = compute_free_energy(eps, N, beta).block_until_ready()
-        # Compute auxiliary free energies
-        Fp = compute_aux_free_energy_vmap(eps, F, beta).block_until_ready()
-
-        # Compute the occupation numbers n_approx with current orbital energies
-        n_approx = jnp.exp(-beta * (eps + Fp[:, 0] - F[N]))
-        errors.append(jnp.sum(jnp.abs(n_approx - n)))
-
-        if verbose:
-            print(f"iter {i}, error {errors[i]}")
-
-        # If the error in the occupation numbers is below the threshold, stop
-        if errors[i] < threshold:
-            result["converged"] = True
-            break
-
-        # If we are not at the last iterate, update the orbital energies
-        if i != max_iters:
-            if not old:
-                # Bosonic Sinkhorn iteration
-                eps = eps_GC + Fp[:, 1] - Fp[:, 0]
-            else:
-                # Regular Sinkhorn iteration
-                eps = -jnp.log(n) / beta + F[-1] - Fp[:, 0]
-
-            # Shift orbital energies such that \sum_p n_p \epsilon_p = 0
-            eps = eps - jnp.sum(n * eps) / N
-
-        if jnp.any(jnp.isnan(eps)) or jnp.any(jnp.isinf(eps)):
-            print("Encountered inf or nan in orbital energies")
-            print(eps)
-            break
-
-    # Compute entropy, note that this assumes that the orbital energies are shifted
-    S = -beta * F[-1]
-
-    # Pack the results in a dictionary
-    result["eps"] = eps
-    result["errors"] = errors
-    result["F"] = F
-    result["S"] = S
-    result["eps_GC"] = eps_GC
-    result["S_GC"] = S_GC
-    result["n_approx"] = n_approx
-    return result
