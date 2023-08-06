@@ -1,4 +1,8 @@
 # Import bfsinkhorn
+
+# Import jax config and numpy and set floats to 64-bit
+from jax.config import config
+
 import bfsinkhorn
 
 # Import bosonic package
@@ -6,10 +10,6 @@ import bfsinkhorn.boson
 
 # Import fermionic package
 import bfsinkhorn.fermion
-
-# Import jax config and numpy and set floats to 64-bit
-from jax.config import config
-import jax.numpy as jnp
 
 config.update("jax_enable_x64", True)
 

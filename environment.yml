@@ -7,8 +7,10 @@ dependencies:
   - scipy
   - jupyter
   - matplotlib
-  - jax
-  - jaxlib>=0.3.7
+  - jax[cpu] >= 0.4.5
+  - jaxlib
+  - jaxopt
+  - equinox
+  - llvm-openmp
+  - pyscf
   - pip
-  - pip:
-    - pyscf

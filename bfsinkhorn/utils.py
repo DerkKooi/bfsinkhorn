@@ -1,10 +1,10 @@
-from jax import jit, vmap
 import jax.numpy as jnp
+from jax import jit, vmap
 
 
 @jit
-def log1mexp(a):
-    """Computes log(1 - exp(-a)) for a > 0
+def log1mexp(a: float) -> float:
+    r"""Computes log(1 - exp(-a)) for a > 0
 
     This should be stable whether or not a is above or below log(2)
 
@@ -24,8 +24,8 @@ def log1mexp(a):
 
 
 @jit
-def minlogsumminexp(exponents):
-    """Calculate minus the log of the sum of exponents
+def minlogsumminexp(exponents: jnp.ndarray) -> float:
+    r"""Calculate minus the log of the sum of exponents
 
     This is done in a stable way by shifting the exponents (log-sum-exp trick)
 
@@ -44,23 +44,23 @@ def minlogsumminexp(exponents):
 
 
 @jit
-def minlogsumminexp_array(exponents):
-    """Calculate minus the log of the multiple sums of exponents for an array
+def minlogsumminexp_array(exponents: jnp.ndarray) -> jnp.ndarray:
+    r"""Calculate minus the log of the multiple sums of exponents for an array
 
     This is done in a stable way by shifting the exponents (log-sum-exp trick)
 
     Parameters
     ----------
     exponents : 2-dimensional ndarray
-        The exponents to sum (on axis zero)
+        The exponents to sum (on axis one)
 
     Returns
     -------
     minlogsumminexp : 1-dimensional ndarray
         The result of log(sum(exp(exponents)))
     """
-    min = jnp.min(exponents, axis=0)
-    return -jnp.log(jnp.sum(jnp.exp(-exponents + min), axis=0)) + min
+    min = jnp.min(exponents, axis=1)
+    return -jnp.log(jnp.sum(jnp.exp(-exponents + min), axis=1)) + min
 
 
 # Parallelize minlogsumminexp with vmap,
