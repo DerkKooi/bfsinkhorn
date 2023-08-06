@@ -8,7 +8,7 @@ dependencies:
   - jupyter
   - matplotlib
   - jax[cpu]
-  - jaxlib>=0.3.7
+  - jaxlib
   - jaxopt
   - equinox
   - llvm-openmp
