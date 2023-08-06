@@ -31,8 +31,8 @@ def normalize_eps(n: jnp.ndarray, eps: jnp.ndarray) -> jnp.ndarray:
     return eps - jnp.sum(n * eps) / jnp.sum(n)
 
 
-@partial(jit, static_argnums=(1,))
-def compute_free_energy(eps: jnp.ndarray, N: int, beta: float) -> jnp.ndarray:
+@partial(jit, static_argnums=(0,))
+def compute_free_energy(N: int, eps: jnp.ndarray, beta: float) -> jnp.ndarray:
     r"""
     Compute bosonic free energies
 
@@ -119,8 +119,8 @@ compute_aux_free_energy_vmap = jit(
 )
 
 
-@partial(jit, static_argnums=(1,))
-def compute_occupations(eps: jnp.ndarray, N: int, beta: float) -> jnp.ndarray:
+@partial(jit, static_argnums=(0,))
+def compute_occupations(N: int, eps: jnp.ndarray, beta: float) -> jnp.ndarray:
     r"""
     Compute the occupation numbers for a given set of orbital energies
 
@@ -138,7 +138,7 @@ def compute_occupations(eps: jnp.ndarray, N: int, beta: float) -> jnp.ndarray:
     """
 
     # Compute free energy
-    F = compute_free_energy(eps, N, beta)
+    F = compute_free_energy(N, eps, beta)
 
     # Compute auxiliary free energy
     Fp = compute_aux_free_energy_vmap(eps, F, beta)
@@ -458,7 +458,7 @@ class Sinkhorn(eqx.Module):
         n = n / jnp.sum(n) * self.N
 
         # Compute free energy
-        F = compute_free_energy(eps, self.N, beta)
+        F = compute_free_energy(self.N, eps, beta)
 
         # Compute auxiliary free energy
         Fp = compute_aux_free_energy_vmap(eps, F, beta)
@@ -517,7 +517,7 @@ class Sinkhorn(eqx.Module):
         if eps is None:
             eps = eps_GC
 
-        init_n_error = jnp.sum(jnp.abs(n - compute_occupations(eps, self.N, beta)))
+        init_n_error = jnp.sum(jnp.abs(n - compute_occupations(self.N, eps, beta)))
 
         # Initialize the state
         state = self._optimizer.init_state(eps, n, beta)
@@ -526,7 +526,7 @@ class Sinkhorn(eqx.Module):
         # Function to take an optimizer step
         def take_step(step: OptStep, _) -> Tuple[OptStep, float]:
             step = self._optimizer.update(*step, n, beta)
-            current_n = compute_occupations(step.params, self.N, beta)
+            current_n = compute_occupations(self.N, step.params, beta)
             return step, jnp.sum(jnp.abs(current_n - n))
 
         # Run iterations
@@ -534,8 +534,8 @@ class Sinkhorn(eqx.Module):
 
         # Unpack step and return results in dictionary
         eps, state = step.params, step.state
-        n_approx = compute_occupations(eps, self.N, beta)
-        F = compute_free_energy(eps, self.N, beta)
+        n_approx = compute_occupations(self.N, eps, beta)
+        F = compute_free_energy(self.N, eps, beta)
         results = {
             "eps": eps,
             "n_approx": n_approx,
@@ -626,9 +626,9 @@ class Sinkhorn(eqx.Module):
         eps, state = self._optimizer.run(eps, n, beta)
 
         # Compute all the results
-        n_approx = compute_occupations(eps, self.N, beta)
+        n_approx = compute_occupations(self.N, eps, beta)
         n_error = jnp.sum(jnp.abs(n - n_approx))
-        F = compute_free_energy(eps, self.N, beta)
+        F = compute_free_energy(self.N, eps, beta)
         results = {
             "eps": eps,
             "n_approx": n_approx,
@@ -733,12 +733,10 @@ class Sinkhorn(eqx.Module):
         dn_deps : 2-dimensional ndarray
           The derivative of the occupation numbers with respect to the orbital energies
         """
-        return lax.cond(
-            self.use_jacrev_dn_deps,
-            jacrev(compute_occupations, argnums=0),
-            jacfwd(compute_occupations, argnums=0),
-            *(eps, self.N, beta),
-        )
+        if self.use_jacrev_dn_deps:
+            return jacrev(partial(compute_occupations, self.N), argnums=0)(eps, beta)
+        else:
+            return jacfwd(partial(compute_occupations, self.N), argnums=0)(eps, beta)
 
     def d2n_deps2(self, eps: jnp.ndarray, beta: float = 1.0) -> jnp.ndarray:
         """
@@ -756,13 +754,10 @@ class Sinkhorn(eqx.Module):
         d2n_deps2 : 3-dimensional ndarray
           The second derivative of the occupation numbers with respect to the orbital energies
         """
-        return lax.cond(
-            self.use_jacrev_d2n_deps2,
-            jacrev(self.dn_deps, argnums=0),
-            jacfwd(self.dn_deps, argnums=0),
-            *(eps),
-            **{"beta": beta},
-        )
+        if self.use_jacrev_d2n_deps2:
+            return jacrev(self.dn_deps, argnums=0)(eps, beta)
+        else:
+            return jacfwd(self.dn_deps, argnums=0)(eps, beta)
 
     def compute_correlations(
         self, n: jnp.ndarray, eps: jnp.ndarray, beta: float = 1.0
