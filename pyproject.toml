@@ -23,8 +23,8 @@ requires-python = ">=3.7"
 dependencies = [
     "numpy",
     "scipy",
-    "jax>=0.3.7",
-    "jaxlib>=0.3.7",
+    "jax>=0.4.5",
+    "jaxlib>=0.4.5",
     "jaxopt",
 ]
 
