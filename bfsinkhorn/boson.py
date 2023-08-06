@@ -12,7 +12,7 @@ from .utils import minlogsumminexp, minlogsumminexp_array, minlogsumminexp_vmap
 
 
 @jit
-def normalize_eps(n: jnp.ndarray, eps: jnp.ndarray, beta: float = 1.0) -> jnp.ndarray:
+def normalize_eps(n: jnp.ndarray, eps: jnp.ndarray) -> jnp.ndarray:
     """
     Normalize the orbital energies
 
@@ -32,7 +32,7 @@ def normalize_eps(n: jnp.ndarray, eps: jnp.ndarray, beta: float = 1.0) -> jnp.nd
 
 
 @partial(jit, static_argnums=(1,))
-def compute_free_energy(eps: jnp.ndarray, N: int, beta: float = 1.0) -> jnp.ndarray:
+def compute_free_energy(eps: jnp.ndarray, N: int, beta: float) -> jnp.ndarray:
     r"""
     Compute bosonic free energies
 
@@ -74,7 +74,7 @@ def compute_free_energy(eps: jnp.ndarray, N: int, beta: float = 1.0) -> jnp.ndar
 
 
 @jit
-def compute_aux_free_energy(eps: jnp.ndarray, F: jnp.ndarray, beta: float = 1.0) -> jnp.ndarray:
+def compute_aux_free_energy(eps: jnp.ndarray, F: jnp.ndarray, beta: float) -> jnp.ndarray:
     r"""
     Compute bosonic auxiliary free energy,
 
@@ -120,7 +120,7 @@ compute_aux_free_energy_vmap = jit(
 
 
 @partial(jit, static_argnums=(1,))
-def compute_occupations(eps: jnp.ndarray, N: int, beta: float = 1.0) -> jnp.ndarray:
+def compute_occupations(eps: jnp.ndarray, N: int, beta: float) -> jnp.ndarray:
     r"""
     Compute the occupation numbers for a given set of orbital energies
 
@@ -150,7 +150,7 @@ def compute_occupations(eps: jnp.ndarray, N: int, beta: float = 1.0) -> jnp.ndar
 
 
 @jit
-def eps_GC_guess(n: jnp.ndarray, beta: float = 1.0) -> jnp.ndarray:
+def eps_GC_guess(n: jnp.ndarray, beta: float) -> jnp.ndarray:
     """
     Compute the grand canonical guess for the orbital energies
 
@@ -168,7 +168,7 @@ def eps_GC_guess(n: jnp.ndarray, beta: float = 1.0) -> jnp.ndarray:
 
 
 @jit
-def compute_S_GC(n: jnp.ndarray, beta: float = 1.0) -> float:
+def compute_S_GC(n: jnp.ndarray, beta: float) -> float:
     """
     Compute the grand canonical entropy
 
@@ -186,17 +186,17 @@ def compute_S_GC(n: jnp.ndarray, beta: float = 1.0) -> float:
 
 
 @jit
-def eps_update(n: jnp.ndarray, _: float, Fp: jnp.ndarray, beta: float = 1.0) -> jnp.ndarray:
+def eps_update(n: jnp.ndarray, _: float, Fp: jnp.ndarray, beta: float) -> jnp.ndarray:
     return -jnp.log(n / (1 + n)) / beta + Fp[:, 1] - Fp[:, 0]
 
 
 @jit
-def eps_update_old(n: jnp.ndarray, FN: float, Fp: jnp.ndarray, beta: float = 1.0) -> jnp.ndarray:
+def eps_update_old(n: jnp.ndarray, FN: float, Fp: jnp.ndarray, beta: float) -> jnp.ndarray:
     return -jnp.log(n) / beta + FN - Fp[:, 0]
 
 
 @jit
-def compute_aux_free_energy_all(eps: float, F: jnp.ndarray, beta: float = 1.0):
+def compute_aux_free_energy_all(eps: float, F: jnp.ndarray, beta: float):
     r"""
     Compute all bosonic auxiliary free energies,
 
@@ -278,7 +278,7 @@ def compute_correlations(n: jnp.ndarray, eps: jnp.ndarray, F: jnp.ndarray, beta:
 
 
 @jit
-def compute_correlations_degen(eps: float, F: jnp.ndarray, beta: float = 1.0) -> float:
+def compute_correlations_degen(eps: float, F: jnp.ndarray, beta: float) -> float:
     r"""
     Compute the bosonic correlations <\hat{n}_p \hat{n}_q> for degenerate levels
 
@@ -315,7 +315,7 @@ compute_correlations_degen_vmap = jit(
 
 
 def compute_correlations_full(
-    n: jnp.ndarray, eps: jnp.ndarray, F: jnp.ndarray, beta: float = 1.0, degen_cutoff: float = 1e-7
+    n: jnp.ndarray, eps: jnp.ndarray, F: jnp.ndarray, beta: float, degen_cutoff: float = 1e-7
 ) -> jnp.ndarray:
     r"""
     Compute the bosonic correlations <\hat{n}_p \hat{n}_q>
@@ -406,7 +406,7 @@ class Sinkhorn(eqx.Module):
         if anderson:
             # Anderson acceleration does not seem to offer any advantage unless old is true
             self._optimizer = AndersonAcceleration(
-                self.fixed_point,
+                self._fixed_point,
                 history_size=history_size,
                 mixing_frequency=mixing_frequency,
                 beta=anderson_beta,
@@ -419,7 +419,7 @@ class Sinkhorn(eqx.Module):
             )
         else:
             self._optimizer = FixedPointIteration(
-                self.fixed_point,
+                self._fixed_point,
                 maxiter=maxiter,
                 tol=tol,
                 verbose=verbose,
@@ -427,11 +427,11 @@ class Sinkhorn(eqx.Module):
                 jit=not verbose,
             )
 
-    def fixed_point(
+    def _fixed_point(
         self,
         eps: jnp.ndarray,
         n: jnp.ndarray,
-        beta: float = 1.0,
+        beta: float,
     ) -> jnp.ndarray:
         r"""
         Compute the orbital energies from a (Bosonic) Sinkhorn step
@@ -520,13 +520,13 @@ class Sinkhorn(eqx.Module):
         init_n_error = jnp.sum(jnp.abs(n - compute_occupations(eps, self.N, beta)))
 
         # Initialize the state
-        state = self._optimizer.init_state(eps, n, beta=beta)
-        step = self._optimizer.update(eps, state, n, beta=beta)
+        state = self._optimizer.init_state(eps, n, beta)
+        step = self._optimizer.update(eps, state, n, beta)
 
         # Function to take an optimizer step
         def take_step(step: OptStep, _) -> Tuple[OptStep, float]:
             step = self._optimizer.update(*step, n, beta)
-            current_n = compute_occupations(step.params, self.N, beta=beta)
+            current_n = compute_occupations(step.params, self.N, beta)
             return step, jnp.sum(jnp.abs(current_n - n))
 
         # Run iterations
@@ -534,8 +534,8 @@ class Sinkhorn(eqx.Module):
 
         # Unpack step and return results in dictionary
         eps, state = step.params, step.state
-        n_approx = compute_occupations(eps, self.N, beta=beta)
-        F = compute_free_energy(eps, self.N, beta=beta)
+        n_approx = compute_occupations(eps, self.N, beta)
+        F = compute_free_energy(eps, self.N, beta)
         results = {
             "eps": eps,
             "n_approx": n_approx,
@@ -554,11 +554,11 @@ class Sinkhorn(eqx.Module):
                 }
             )
         results["eps_GC"] = eps_GC
-        results["S_GC"] = compute_S_GC(eps_GC, beta=beta)
+        results["S_GC"] = compute_S_GC(eps_GC, beta)
 
         return results
 
-    def _run_eps_only(self, n: jnp.ndarray, eps: jnp.ndarray, beta: float = 1.0) -> jnp.ndarray:
+    def _run_eps_only(self, n: jnp.ndarray, eps: jnp.ndarray, beta: float) -> jnp.ndarray:
         """
         Run the Sinkhorn algorithm
 
@@ -618,17 +618,17 @@ class Sinkhorn(eqx.Module):
         n = n / jnp.sum(n) * self.N
 
         # Initialize eps if necessary
-        eps_GC = eps_GC_guess(n, beta=beta)
+        eps_GC = eps_GC_guess(n, beta)
         if eps is None:
             eps = eps_GC
 
         # Run the Sinkhorn algorithm
-        eps, state = self._optimizer.run(eps, n, beta=beta)
+        eps, state = self._optimizer.run(eps, n, beta)
 
         # Compute all the results
-        n_approx = compute_occupations(eps, self.N, beta=beta)
+        n_approx = compute_occupations(eps, self.N, beta)
         n_error = jnp.sum(jnp.abs(n - n_approx))
-        F = compute_free_energy(eps, self.N, beta=beta)
+        F = compute_free_energy(eps, self.N, beta)
         results = {
             "eps": eps,
             "n_approx": n_approx,
@@ -671,9 +671,9 @@ class Sinkhorn(eqx.Module):
           The derivative of the orbital energies with respect to the occupation numbers
         """
         if self.use_jacrev_deps_dn:
-            deriv = jacrev(self._run_eps_only, argnums=0)(n, eps, beta=beta)
+            deriv = jacrev(self._run_eps_only, argnums=0)(n, eps, beta)
         else:
-            deriv = jacfwd(self._run_eps_only, argnums=0)(n, eps, beta=beta)
+            deriv = jacfwd(self._run_eps_only, argnums=0)(n, eps, beta)
 
         # The derivative does not have the desired properties that
         # \sum_p \partial \epsilon_p / \partial n_q = 0
@@ -737,8 +737,7 @@ class Sinkhorn(eqx.Module):
             self.use_jacrev_dn_deps,
             jacrev(compute_occupations, argnums=0),
             jacfwd(compute_occupations, argnums=0),
-            *(eps, self.N),
-            **{"beta": beta},
+            *(eps, self.N, beta),
         )
 
     def d2n_deps2(self, eps: jnp.ndarray, beta: float = 1.0) -> jnp.ndarray:
