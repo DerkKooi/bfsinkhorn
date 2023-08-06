@@ -5,8 +5,8 @@ A python package to calculate (non-interacting) orbital energies for 1-body Redu
 
 
 ## Requirements:
-- Python 3.7 or newer
-- jax 0.3.0 or preferably newer (and corresponding jaxlib)
+- Python 3.9 or newer
+- jax 0.4.5 or preferably newer (and corresponding jaxlib)
 - Optional: numpy (for running the notebooks in figures)
 - Optional: pyscf (for running the notebooks in figures pertaining to electronic systems)
 
@@ -39,7 +39,7 @@ The boson and fermion submodules contain functions to compute (auxiliary) free e
 ## License
 MIT License
 
-Copyright (c) 2022 Derk P. Kooi
+Copyright (c) 2022-2023 Derk P. Kooi
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
